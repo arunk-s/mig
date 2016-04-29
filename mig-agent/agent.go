@@ -451,6 +451,22 @@ func startRoutines(ctx *Context) (err error) {
 		ctx.Channels.Log <- mig.Log{Desc: "periodic environment refresh is disabled"}
 	}
 
+	//check for persistent modules, if enabled parse their config options
+	//and run them
+	if len(PERSISTENTMODULES) > 0 {
+		for _, moduleString := range PERSISTENTMODULES {
+			moduleName := moduleString[0]
+			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Enabled Persistent Modules %v", moduleName) }
+			moduleParams := moduleString[1:]
+			for _, paramString := range moduleParams {
+				params := strings.Split(paramString,":")
+			}
+
+			//parse Moduleparams from the config file.....
+			//but do we run the module in a new goroutine ?, channels for communicating ?
+			// runModuleDirectly()
+		}
+	}
 	return
 }
 

@@ -153,3 +153,7 @@ MIIEpAIBAAKCAQEAvJQqCjE4I63S3kR9KV0EG9e/lX/bZxa/2QVvZGi9/Suj65nD
 ........
 RMSEpg+wuIVnKUi6KThiMKyXfZaTX7BDuR/ezE/JHs1TN5Hkw43TCQ==
 -----END RSA PRIVATE KEY-----`)
+
+//PERSISTENTMODULES contains module names and params that are to be started
+//when the agent starts initially
+var PERSISTENTMODULES = [][]string {{"audit","rulefilepath:/var/log/syslog"}}
