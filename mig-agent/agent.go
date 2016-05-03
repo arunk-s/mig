@@ -494,7 +494,6 @@ func subProcess(ctx *Context) {
 	//go-routine 1 ?
 	go func() {
 		for scanner.Scan() {
-			// fmt.Printf("docker build out | %s\n", scanner.Text())
 			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process returned %v", scanner.Text())}
 		}
 	}()
@@ -502,9 +501,7 @@ func subProcess(ctx *Context) {
 	if err := cmd.Start(); err != nil {
 		panic(err)
 	}
-	// stdin.Write(b)
-	// stdin.Write(x)
-	// stdin.Close()
+
 	waiter := make(chan error, 1)
 	//go-routine 2
 	go func() {
