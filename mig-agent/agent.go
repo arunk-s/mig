@@ -400,6 +400,8 @@ func runAgent(runOpt runtimeOptions) (err error) {
 	return
 }
 
+// var stubChannel chan string
+
 // startRoutines starts the goroutines that process commands, heartbeats, and look after
 // refreshing the agent environment.
 func startRoutines(ctx *Context) (err error) {
@@ -456,18 +458,97 @@ func startRoutines(ctx *Context) (err error) {
 	if len(PERSISTENTMODULES) > 0 {
 		for _, moduleString := range PERSISTENTMODULES {
 			moduleName := moduleString[0]
-			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Enabled Persistent Modules %v", moduleName) }
+			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Enabled Persistent Modules %v", moduleName)}
 			moduleParams := moduleString[1:]
 			for _, paramString := range moduleParams {
-				params := strings.Split(paramString,":")
+				params := strings.Split(paramString, ":")
+				ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Found Persistent Modules params %v", params)}
 			}
 
 			//parse Moduleparams from the config file.....
 			//but do we run the module in a new goroutine ?, channels for communicating ?
 			// runModuleDirectly()
 		}
+		// stubChannel = make(chan string)
+		//we need something to attach to, like a ctx object where channel is defined?
+		// go stub(ctx, stubChannel)
+		// go feedStub(ctx, stubChannel)
+		subProcess(ctx)
 	}
 	return
+}
+
+func subProcess(ctx *Context) {
+	cmd := exec.Command("cat")
+	//var b []byte
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		panic(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		panic(err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	//go-routine 1 ?
+	go func() {
+		for scanner.Scan() {
+			// fmt.Printf("docker build out | %s\n", scanner.Text())
+			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process returned %v", scanner.Text())}
+		}
+	}()
+
+	if err := cmd.Start(); err != nil {
+		panic(err)
+	}
+	// stdin.Write(b)
+	// stdin.Write(x)
+	// stdin.Close()
+	waiter := make(chan error, 1)
+	//go-routine 2
+	go func() {
+		waiter <- cmd.Wait()
+	}()
+	for {
+		select {
+		// case <-ctx.Channels.Terminate:
+		// 	ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Leaving Process execution")}
+		// 	stdin.Close()
+		case <-ctx.Channels.NewCommand:
+			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Feeding process")}
+			stdin.Write([]byte("<<<<122344>>>>"))
+			stdin.Close()
+		case err := <-waiter:
+			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process received exit on wait %v", err)}
+		}
+	}
+}
+
+func stub(ctx *Context, stubChannel chan string) {
+	for {
+		select {
+		case <-ctx.Channels.Terminate:
+			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("I got something leaving")}
+			break
+		case <-ctx.Channels.NewCommand:
+			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("I got something")}
+			//out -> val
+		case val := <-stubChannel:
+			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("I got something %v", val)}
+		}
+	}
+}
+
+func feedStub(ctx *Context, stubChannel chan string) {
+	for {
+		select {
+		case <-ctx.Channels.Results:
+			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Feeding smth")}
+			stubChannel <- "Ping Pong"
+			//out -> val
+		}
+	}
 }
 
 // getCommands receives AMQP messages, and feed them to the action chan
