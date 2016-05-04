@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -480,7 +481,6 @@ func startRoutines(ctx *Context) (err error) {
 
 func subProcess(ctx *Context) {
 	cmd := exec.Command("cat")
-	//var b []byte
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		panic(err)
@@ -490,11 +490,23 @@ func subProcess(ctx *Context) {
 		panic(err)
 	}
 
-	scanner := bufio.NewScanner(stdout)
+	ping := make(chan string)
 	//go-routine 1 ?
 	go func() {
-		for scanner.Scan() {
-			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process returned %v", scanner.Text())}
+		for {
+			select {
+			case <-ping:
+				b := make([]byte, 1000)
+				n, err := stdout.Read(b)
+				if err != nil {
+					ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process returned err %v", err)}
+				} else {
+					b = b[:n]
+					v := string(b)
+					ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process returned %v", v ) }
+				}
+			}
+
 		}
 	}()
 
@@ -507,17 +519,22 @@ func subProcess(ctx *Context) {
 	go func() {
 		waiter <- cmd.Wait()
 	}()
+	//go-routine 3
+	go feedStdin(ctx, &stdin, waiter, ping)
+}
+
+func feedStdin(ctx *Context, stdin *io.WriteCloser, waiter chan error, ping chan string) {
 loop:
 	for {
 		select {
 		case <-ctx.Channels.Terminate:
 			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Leaving Process execution")}
-			stdin.Close()
+			(*stdin).Close()
 			break loop
 		case <-ctx.Channels.NewCommand:
 			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Feeding process")}
-			stdin.Write([]byte("<<<<122344>>>>"))
-			//stdin.Close()
+			(*stdin).Write([]byte("<<<<122344>>>>"))
+			ping <- "Finished"
 		case err := <-waiter:
 			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process received exit on wait %v", err)}
 			break loop
