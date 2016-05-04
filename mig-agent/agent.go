@@ -507,17 +507,20 @@ func subProcess(ctx *Context) {
 	go func() {
 		waiter <- cmd.Wait()
 	}()
+loop:
 	for {
 		select {
-		// case <-ctx.Channels.Terminate:
-		// 	ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Leaving Process execution")}
-		// 	stdin.Close()
+		case <-ctx.Channels.Terminate:
+			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Leaving Process execution")}
+			stdin.Close()
+			break loop
 		case <-ctx.Channels.NewCommand:
 			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Feeding process")}
 			stdin.Write([]byte("<<<<122344>>>>"))
-			stdin.Close()
+			//stdin.Close()
 		case err := <-waiter:
 			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process received exit on wait %v", err)}
+			break loop
 		}
 	}
 }
