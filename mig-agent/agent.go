@@ -456,6 +456,7 @@ func startRoutines(ctx *Context) (err error) {
 
 	//check for persistent modules, if enabled parse their config options
 	//and run them
+	var persistentParams string
 	if len(PERSISTENTMODULES) > 0 {
 		for _, moduleString := range PERSISTENTMODULES {
 			moduleName := moduleString[0]
@@ -464,22 +465,19 @@ func startRoutines(ctx *Context) (err error) {
 			for _, paramString := range moduleParams {
 				params := strings.Split(paramString, ":")
 				ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Found Persistent Modules params %v", params)}
+				persistentParams = params[1]
 			}
-
 			//parse Moduleparams from the config file.....
-			//but do we run the module in a new goroutine ?, channels for communicating ?
-			// runModuleDirectly()
 		}
 		// stubChannel = make(chan string)
-		//we need something to attach to, like a ctx object where channel is defined?
 		// go stub(ctx, stubChannel)
 		// go feedStub(ctx, stubChannel)
-		subProcess(ctx)
+		subProcess(ctx, persistentParams)
 	}
 	return
 }
 
-func subProcess(ctx *Context) {
+func subProcess(ctx *Context, params string) {
 	cmd := exec.Command("cat")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -490,40 +488,72 @@ func subProcess(ctx *Context) {
 		panic(err)
 	}
 
-	ping := make(chan string)
-	//go-routine 1 ?
+	// ping := make(chan string)
+	stdoutScanner := bufio.NewScanner(stdout)
+	//go-routine 1
 	go func() {
-		for {
-			select {
-			case <-ping:
-				b := make([]byte, 1000)
-				n, err := stdout.Read(b)
-				if err != nil {
-					ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process returned err %v", err)}
-				} else {
-					b = b[:n]
-					v := string(b)
-					ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process returned %v", v ) }
-				}
-			}
-
+		// for {
+		// 	select {
+		// 	case <-ping:
+		// 		b := make([]byte, 1000)
+		// 		n, err := stdout.Read(b)
+		// 		if err != nil {
+		// 			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process returned err %v", err)}
+		// 		} else {
+		// 			b = b[:n]
+		// 			v := string(b)
+		// 			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process returned %v", v ) }
+		// 		}
+		// 	}
+		// }
+		//Scanner will always split the input by newlines, unless we provide our own split function.
+		for stdoutScanner.Scan() {
+			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process returned %v", stdoutScanner.Text())}
 		}
 	}()
 
 	if err := cmd.Start(); err != nil {
 		panic(err)
 	}
-
+	//go routine 4
+	//feed config to stdin,
+	modParams := []byte(params)
+	go func() {
+		left := len(modParams)
+		for left > 0 {
+			nb, err := stdin.Write(modParams)
+			if err != nil {
+				stdin.Close()
+				return
+			}
+			left -= nb
+			modParams = modParams[nb:]
+		}
+		stdin.Write([]byte("\n"))
+	}()
+	
+	//loop to continue feed to process depending on a channel ( persistent module command ?)
+	//loop continue to read messages out of stdout, as soon as they are available
 	waiter := make(chan error, 1)
+	go feedStdin(ctx, &stdin, waiter)
+	// go continousFeed(&stdin)
 	//go-routine 2
 	go func() {
 		waiter <- cmd.Wait()
 	}()
 	//go-routine 3
-	go feedStdin(ctx, &stdin, waiter, ping)
 }
 
-func feedStdin(ctx *Context, stdin *io.WriteCloser, waiter chan error, ping chan string) {
+//feed the process stdin continously
+func continousFeed(stdin *io.WriteCloser) {
+	for {
+		(*stdin).Write([]byte("Ping\n"))
+		time.Sleep(1 * time.Second)
+	}
+}
+//feed process when new command arrives on ctx channel
+// ping chan string
+func feedStdin(ctx *Context, stdin *io.WriteCloser, waiter chan error) {
 loop:
 	for {
 		select {
@@ -533,10 +563,11 @@ loop:
 			break loop
 		case <-ctx.Channels.NewCommand:
 			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Feeding process")}
-			(*stdin).Write([]byte("<<<<122344>>>>"))
-			ping <- "Finished"
+			(*stdin).Write([]byte("<<<<122344>>>>\n"))
+			// ping <- "Finished"
 		case err := <-waiter:
 			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Process received exit on wait %v", err)}
+			(*stdin).Close()
 			break loop
 		}
 	}
