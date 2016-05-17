@@ -32,6 +32,9 @@ type MessageClass string
 const (
 	MsgClassParameters MessageClass = "parameters"
 	MsgClassStop       MessageClass = "stop"
+	MsgClassConfig     MessageClass = "config"
+	MsgClassStatus     MessageClass = "status"
+	MsgClassHeartbeat  MessageClass = "heartbeat"
 )
 
 // Result implement the base type for results returned by modules.
