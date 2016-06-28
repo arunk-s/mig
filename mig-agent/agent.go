@@ -66,7 +66,7 @@ type moduleOp struct {
 //struct to be used when sending messages to a persistent module process
 type persistentModuleMsg struct {
 	msg          modules.Message
-	responseChan chan bool
+	responseChan chan []byte
 }
 
 var runningPersistentMods = make(map[string]chan persistentModuleMsg)
@@ -617,9 +617,9 @@ func startPersistentModule(ctx *Context, moduleName, params string) (err error) 
 	timeOutTicker := time.Tick(30 * time.Second)
 	go func() {
 		// capacity of these arrays ?
-		openStatusReqs := make([]*chan bool, 0, 5)
-		openStopReqs := make([]*chan bool, 0, 5)
-		openConfigReqs := make([]*chan bool, 0, 5)
+		openStatusReqs := make([]*chan []byte, 0, 5)
+		openStopReqs := make([]*chan []byte, 0, 5)
+		openConfigReqs := make([]*chan []byte, 0, 5)
 	loop:
 		for {
 			select {
@@ -635,7 +635,7 @@ func startPersistentModule(ctx *Context, moduleName, params string) (err error) 
 				if len(openStopReqs) > 0 {
 					responseChan := openStopReqs[0]
 					openStopReqs = openStopReqs[1:]
-					*responseChan <- true
+					*responseChan <- []byte(1)
 				}
 				delete(runningPersistentMods, moduleName)
 				break loop
@@ -657,14 +657,14 @@ func startPersistentModule(ctx *Context, moduleName, params string) (err error) 
 					if len(openStatusReqs) > 0 {
 						responseChan := openStatusReqs[0]
 						openStatusReqs = openStatusReqs[1:]
-						*responseChan <- true
+						*responseChan <- []byte(1)
 					}
 				} else if newMessage.Class == modules.MsgClassConfig {
 					ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("%q: New Config loaded.", moduleName)}
 					if len(openConfigReqs) > 0 {
 						responseChan := openConfigReqs[0]
 						openConfigReqs = openConfigReqs[1:]
-						*responseChan <- true
+						*responseChan <- []byte(1)
 					}
 				} else {
 					ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("%q: %q", moduleName, msg)}

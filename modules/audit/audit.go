@@ -335,12 +335,18 @@ func (r *run) setConfigParams() (err error) {
 
 // buffer for holding single event messages
 var eventBuffer []*netlinkAudit.AuditEvent
-var auditSerial int64
+
+// var auditSerial int64
+var auditSerial string
 
 func messageHandler(msg string, event *netlinkAudit.AuditEvent, errChan chan error, args ...interface{}) {
 	select {
 	case err := <-errChan:
+
 		fmt.Printf("audit event error: %v\n", err)
+		fmt.Println(msg)
+		// fmt.Println(event.Data)
+		fmt.Println("xxxxxxx")
 	default:
 		//write messages to unix socket
 		f, err := os.OpenFile("/tmp/log", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
@@ -355,7 +361,7 @@ func messageHandler(msg string, event *netlinkAudit.AuditEvent, errChan chan err
 		// we just add it to the buffer
 		// otherwise as soon as we get the new serial, we empty the buffer
 		// to pack a JSON message and start with the new serial
-		if auditSerial == 0 {
+		if auditSerial == "" {
 			auditSerial = event.Serial
 			eventBuffer = append(eventBuffer, event)
 		} else if auditSerial == event.Serial {
@@ -418,11 +424,12 @@ func handleBuffer(buffer []*netlinkAudit.AuditEvent) (err error) {
 	msg.Tags = []string{"mig-audit", "0.0.1", "audit"}
 	msg.Details = make(map[string]interface{})
 	msg.Details["auditserial"] = auditSerial
-	//  timeStamp := strconv.FormatFloat(buffer[0].Timestamp, 'f', -1, 64)
-	//msg.TimeStamp = time.Unix(int64(buffer[0].Timestamp), 0).Format(time.UnixDate)
-	msg.TimeStamp = buffer[0].Timestamp.Format(time.UnixDate)
+	// timeStamp := strconv.FormatFloat(buffer[0].Timestamp, 'f', -1, 64)
+	// msg.TimeStamp = time.Unix(int64(buffer[0].Timestamp), 0).Format(time.UnixDate)
+	// msg.TimeStamp = buffer[0].Timestamp.Format(time.UnixDate)
+	msg.TimeStamp = buffer[0].Timestamp
 	for _, event := range buffer {
-		fmt.Println(event.Type)
+		// fmt.Println(event.Type)
 		switch event.Type {
 		case "ANOM_PROMISCUOUS":
 			if _, ok := event.Data["dev"]; ok {
@@ -476,7 +483,7 @@ func handleBuffer(buffer []*netlinkAudit.AuditEvent) (err error) {
 			}
 		case "EXECVE":
 			// fmt.Printf("%v\n", event.Data)
-			fmt.Println(event.Raw)
+			// fmt.Println(event.Raw)
 			argcount := 0
 			argc, ok := event.Data["argc"]
 			if ok {
@@ -501,14 +508,14 @@ func handleBuffer(buffer []*netlinkAudit.AuditEvent) (err error) {
 			msg.Details["command"] = fullCmd
 		case "CWD":
 			// fmt.Printf("%v\n", event.Data)
-			fmt.Println(event.Raw)
+			// fmt.Println(event.Raw)
 			cwd, ok := event.Data["cwd"]
 			if ok {
 				msg.Details["cwd"] = cwd
 			}
 		case "PATH":
 			// fmt.Printf("%v\n", event.Data)
-			fmt.Println(event.Raw)
+			// fmt.Println(event.Raw)
 			path = event.Data["name"]
 			msg.Details["path"] = event.Data["name"]
 			msg.Details["inode"] = event.Data["inode"]
@@ -517,23 +524,23 @@ func handleBuffer(buffer []*netlinkAudit.AuditEvent) (err error) {
 			msg.Details["ouid"] = event.Data["ouid"]
 			msg.Details["ogid"] = event.Data["ogid"]
 			msg.Details["rdev"] = event.Data["rdev"]
-			// path map is missing several items : Fixed
-			// map[dev:08:01 mode:0100755 ouid:0 ogid:0 rdev:00:00 nametype:NORMAL item:0 inode:258086]
-			// audit(1463825063.578:19893): item=0 name="/bin/sh" inode=258086 dev=08:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL
+			// same type of messages leads to overwriting of prev ones: fix this case (check "item" ?)
+			// type=PATH msg=audit(1467118452.042:37628): item=0 name="/bin/df" inode=258094 dev=08:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL
+			// type=PATH msg=audit(1467118452.042:37628): item=1 name=(null) inode=135770 dev=08:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL
 
 		case "SYSCALL":
 			// fmt.Printf("%v\n", event.Data)
-			fmt.Println(event.Raw)
-			syscall, ok := event.Data["syscall"]
+			// fmt.Println(event.Raw)
+			syscallName, ok := event.Data["syscall"]
 			if ok {
-				dir, err := os.Getwd()
-				if err != nil {
-					panic(err)
-				}
-				syscallName, err := netlinkAudit.AuditSyscallToName(syscall, dir)
-				if err != nil {
-					panic(err)
-				}
+				// dir, err := os.Getwd()
+				// if err != nil {
+				// 	panic(err)
+				// }
+				// syscallName, err := netlinkAudit.AuditSyscallToName(syscall, dir)
+				// if err != nil {
+				// 	panic(err)
+				// }
 				msg.Details["processname"] = event.Data["comm"]
 				if syscallName == "write" || syscallName == "unlink" || syscallName == "open" || syscallName == "rename" {
 					haveJSON = true
