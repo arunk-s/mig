@@ -231,6 +231,14 @@ func (r *run) runAudit(out *string, moduleDone, stop *chan bool) (err error) {
 			}
 		}
 	}()
+	// setup output medium and provide it to dispatchEvent
+	f, err := os.OpenFile("/tmp/jsonlog", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+	go dispatchEvent(f)
+
 	netlinkAudit.GetRawAuditMessages(r.netlinkSocket, messageHandler, &errChan, stop)
 	// marshal the results into a json string
 	*out = r.buildResults(el, stats)
@@ -334,6 +342,8 @@ func (r *run) setConfigParams() (err error) {
 }
 
 // buffer for holding single event messages
+// var eventBuffer = make([]*netlinkAudit.AuditEvent, 5)
+
 var eventBuffer []*netlinkAudit.AuditEvent
 
 // var auditSerial int64
@@ -369,13 +379,9 @@ func messageHandler(msg string, event *netlinkAudit.AuditEvent, errChan chan err
 		} else {
 			// event is finished up
 			// process the messages
-			// fd, err := os.OpenFile("/tmp/eventMsg", os.O_WRONLY|os.O_CREATE, 0644)
-			// if err != nil {
-			// 	panic(err)
-			// }
 			fmt.Println(auditSerial)
 			// pack JSON
-			handleBuffer(eventBuffer)
+			handleBuffer(&eventBuffer) // should we do this in a separate go-routine (wouldn't make sense as processing of messages shouldn't take much time)
 			auditSerial = event.Serial
 			eventBuffer = nil
 			eventBuffer = append(eventBuffer, event)
@@ -410,7 +416,7 @@ type jsonMsg struct {
 	ProcessName string                 `json:"processname"`
 }
 
-func handleBuffer(buffer []*netlinkAudit.AuditEvent) (err error) {
+func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 	var (
 		msg      jsonMsg
 		category CategoryType
@@ -418,6 +424,10 @@ func handleBuffer(buffer []*netlinkAudit.AuditEvent) (err error) {
 		path     string
 		haveJSON bool
 	)
+	buffer := *bufferPointer
+	if len(buffer) == 0 {
+		return nil
+	}
 	msg.Hostname = "localhost" //for now
 	msg.ProcessID = 0
 	msg.ProcessName = "mig-audit"
@@ -427,7 +437,12 @@ func handleBuffer(buffer []*netlinkAudit.AuditEvent) (err error) {
 	// timeStamp := strconv.FormatFloat(buffer[0].Timestamp, 'f', -1, 64)
 	// msg.TimeStamp = time.Unix(int64(buffer[0].Timestamp), 0).Format(time.UnixDate)
 	// msg.TimeStamp = buffer[0].Timestamp.Format(time.UnixDate)
-	msg.TimeStamp = buffer[0].Timestamp
+	// msg.TimeStamp = buffer[0].Timestamp
+	timestamp, err := strconv.ParseFloat(buffer[0].Timestamp, 64)
+	if err != nil {
+		return err
+	}
+	msg.TimeStamp = time.Unix(int64(timestamp), 0).Format(time.UnixDate)
 	for _, event := range buffer {
 		// fmt.Println(event.Type)
 		switch event.Type {
@@ -572,20 +587,23 @@ func handleBuffer(buffer []*netlinkAudit.AuditEvent) (err error) {
 					msg.Details["parentprocess"], err = getProcessName(event.Data["ppid"])
 					if err != nil {
 						// we can't get name process name?
+						msg.Details["parentprocess"] = event.Data["ppid"]
 					}
 				}
 				if _, ok := event.Data["auid"]; ok {
-					userName, err := user.LookupId(event.Data["auid"])
+					// userName, err := user.LookupId(event.Data["auid"])
+					userName, err := user.Lookup(event.Data["auid"])
 					if err == nil {
 						msg.Details["originaluser"] = userName.Username
-						msg.Details["originaluid"] = event.Data["auid"]
+						msg.Details["originaluid"] = userName.Uid
 					}
 				}
 				if _, ok := event.Data["uid"]; ok {
-					userName, err := user.LookupId(event.Data["uid"])
+					// userName, err := user.LookupId(event.Data["uid"])
+					userName, err := user.Lookup(event.Data["auid"])
 					if err == nil {
 						msg.Details["user"] = userName.Username
-						msg.Details["uid"] = event.Data["uid"]
+						msg.Details["uid"] = userName.Uid
 					}
 				}
 				msg.Details["tty"] = event.Data["tty"]
@@ -636,11 +654,19 @@ func handleBuffer(buffer []*netlinkAudit.AuditEvent) (err error) {
 		msg.Summary = fmt.Sprintf("time has been modified")
 	} else if category == CatPROMISC {
 		msg.Category = "promiscuous"
-		// msg.Summary = fmt.Sprintf("Promisc: Interface %s set promiscous %s", dev, )
+		msg.Summary = fmt.Sprintf("Promisc: Interface %s set promiscous %s", msg.Details["dev"], msg.Details["au"])
 	}
 	msgBytes, err := json.Marshal(msg)
 	fmt.Printf("%v\n", string(msgBytes))
-	// perform curl
+
+	// sending message via a go-routine by writing to a buffered channel
+	select {
+	case jsonBuffChan <- &msg:
+		fmt.Println("sent message", msg)
+	default:
+		fmt.Println("skipping message", msg)
+	}
+
 	return
 }
 
@@ -655,6 +681,40 @@ func getProcessName(pid string) (name string, err error) {
 	fmt.Fscanf(reader, "Name: %63s", &name)
 
 	return
+}
+
+var (
+	maxQueueSize = 8192
+	// buffered chan for holding json messages
+	jsonBuffChan = make(chan *jsonMsg, 500)
+)
+
+// abstract function that writes to whatever output provided(socket, file etc.)
+// reads messages from buffered chan jsonBuffChan & invoked in a separate go-routine
+func dispatchEvent(output io.Writer) {
+	for {
+		select {
+		case msg := <-jsonBuffChan:
+			fmt.Println("Writing")
+			msgBytes, err := json.Marshal(*msg)
+			if err != nil {
+				panic(err) // or should I ?
+			}
+			msgBytes = append(msgBytes, []byte("\n")...)
+			left := len(msgBytes)
+			for left > 0 {
+				nb, err := output.Write(msgBytes)
+
+				if err != nil {
+					panic(err)
+					// retry to resend the message ?
+				}
+				left -= nb
+				msgBytes = msgBytes[nb:]
+			}
+
+		}
+	}
 }
 
 // buildResults takes the results found by the module, as well as statistics,
