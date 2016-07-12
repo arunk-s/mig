@@ -4,10 +4,12 @@
 //
 // Contributor: Arun Sori arunsori94@gmail.com
 
-// audit is a module that setup rules in audit-framwork in
-// linux kernel and retrieves the audit-events emitted from
-// the kernel and correlate them to form single event messages.
-// Then it forwards those event messages to a UNIX port.
+// audit is a module that setup rules given via a rules file
+// in audit framework based in linux kernel and retrieves
+// the corresponding audit-events emitted from the kernel
+// and correlate them to form single event messages.
+// Then it forwards those event messages to an output medium.
+// output medium can be Unix socket, http server etc.
 
 package audit /* import "mig.ninja/mig/modules/audit" */
 
@@ -18,12 +20,14 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
+	"net/url"
 	"os"
 	"os/user"
 	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/jvehent/gozdef"
 	"github.com/mozilla/libaudit-go"
 	"mig.ninja/mig/modules"
 )
@@ -42,20 +46,25 @@ func init() {
 type run struct {
 	Parameters    params
 	Results       modules.Result
-	netlinkSocket *netlinkAudit.NetlinkConnection
+	netlinkSocket *netlinkAudit.NetlinkConnection // netlink connection to connect to audit in kernel
 }
 
 // parameters structure
 type params struct {
-	RuleFilePath  string   `json:"rulefilepath"`
-	OutputSockets []string `json:"outputsockets"`
+	RuleFilePath  string   `json:"rulefilepath"`  // path to audit rules file
+	OutputSockets []string `json:"outputsockets"` // path to unix socket where audit events will be written
+	ServerAddress string   `json:"serveraddress"` // path to server to write audit events (as POST)
 }
 
+// elements returned by the module are just stub as
+// all the termination means ignore further events
+// and no further processing is done.
 type elements struct {
 	Hostname string `json:"hostname,omitempty"`
 }
 
-// What kind of statistics are possible, as singular run is not usual by client ?
+// similarly stats also is a stub
+// as no further processing happens on stats as well.
 type statistics struct {
 	StuffFound int64 `json:"stufffound"`
 }
@@ -65,10 +74,10 @@ func (r *run) ValidateParameters() (err error) {
 
 	_, err = os.Stat(r.Parameters.RuleFilePath)
 	if err != nil {
-		return fmt.Errorf("ValidateParameters: RuleFilePath parameter is a not a valid path.")
+		return fmt.Errorf("ValidateParameters: RuleFilePath parameter is a not a valid path")
 	}
 	if len(r.Parameters.OutputSockets) == 0 {
-		return fmt.Errorf("ValidateParameters: OutputSockets parameter cannot be omitted.")
+		return fmt.Errorf("ValidateParameters: OutputSockets parameter cannot be omitted")
 	}
 	for _, unixSocket := range r.Parameters.OutputSockets {
 		err := validateUnixSocket(unixSocket)
@@ -76,7 +85,10 @@ func (r *run) ValidateParameters() (err error) {
 			return err
 		}
 	}
-
+	_, err = url.Parse(r.Parameters.ServerAddress)
+	if err != nil {
+		return fmt.Errorf("ValidateParameters: ServerAddress %v is invalid", r.Parameters.ServerAddress)
+	}
 	return
 }
 
@@ -84,17 +96,17 @@ func (r *run) ValidateParameters() (err error) {
 func validateUnixSocket(val string) error {
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: val, Net: "unix"})
 	if err != nil {
-		return fmt.Errorf("Invalid Unix socket! Unable to open.")
+		return fmt.Errorf("ValidateParameters: Invalid unix socket %v", val)
 	}
 	l.Close()
 	os.Remove(val)
 	return nil
 }
 
-// Execute the persistent Module and blocks here until a kill signal is received or
-// module decided to die. Use stdin and stdout for communication with the agent
-// keep sending out heartbeats to stdout
-// keep looking stdin for config changes, status requests, kill signal
+// Execute the persistent Module and control blocks here until a kill signal is received or
+// module decided to die. Uses stdin and stdout for communication with the agent
+// keeps sending out heartbeats to stdout
+// keeps looking stdin for config changes, status requests, kill signal
 func (r *run) Run(in io.Reader) (out string) {
 	defer func() {
 		if e := recover(); e != nil {
@@ -116,8 +128,8 @@ func (r *run) Run(in io.Reader) (out string) {
 		panic(err)
 	}
 
-	// start a goroutine that does some work and another one that looks
-	// for an early stop signal
+	// start a goroutine that does all the heavy work
+	// and another one that looks for an early stop signal
 	moduleDone := make(chan bool)
 	stop := make(chan bool)
 	go r.runAudit(&out, &moduleDone, &stop)
@@ -138,6 +150,7 @@ func (r *run) watchForSignals(in io.Reader, stopChan *chan bool) error {
 		msg, err := modules.ReadInput(in)
 		if err != nil {
 			return err
+			// panic(err) doubt: should we panic, as the function runs in a goroutine and no collection of error is done ?
 		}
 		if msg.Class == modules.MsgClassStop {
 			*stopChan <- true
@@ -146,15 +159,21 @@ func (r *run) watchForSignals(in io.Reader, stopChan *chan bool) error {
 			//read config parameters
 			err := modules.ReadInputParameters(in, &r.Parameters)
 			if err != nil {
-				panic(err)
+				return err
+				// panic(err)
 			}
 			err = r.ValidateParameters()
 			if err != nil {
-				panic(err)
+				// panic(err)
+				return err
 			}
 			// set config params by reading rules file
 			// r.netlinkSocket should be opened by now
-			r.setConfigParams()
+			err = r.setConfigParams()
+			if err != nil {
+				// panic(err)
+				return err
+			}
 		} else if msg.Class == modules.MsgClassStatus {
 			// more parameters can be added to status message
 			// but would require defining a struct that is same
@@ -163,6 +182,7 @@ func (r *run) watchForSignals(in io.Reader, stopChan *chan bool) error {
 			err = sendStatusMessage(statusString)
 			if err != nil {
 				return err
+				// panic(err)
 			}
 		}
 	}
@@ -175,19 +195,22 @@ func (r *run) runAudit(out *string, moduleDone, stop *chan bool) (err error) {
 	)
 
 	stats.StuffFound = 0 // count for stuff
-	el.Hostname = "dummy"
+	el.Hostname, err = os.Hostname()
+	if err != nil {
+		panic(err) //doubt: should we panic, as the function runs in a goroutine and no collection of error is done ?
+	}
 	stats.StuffFound++
 
 	//open a netlink Connection and attach it to the instance of run
 	r.netlinkSocket, err = netlinkAudit.NewNetlinkConnection()
 	if err != nil {
-		panic(err)
+		panic(err) //doubt: should we panic, as the function runs in a goroutine and no collection of error is done ?
 	}
 
 	defer r.netlinkSocket.Close()
 	err = netlinkAudit.AuditSetEnabled(r.netlinkSocket, 1)
 	if err != nil {
-		panic(err)
+		panic(err) // doubt: should we panic, as the function runs in a goroutine and no collection of error is done ?
 	}
 
 	// Check if Audit is enabled
@@ -200,7 +223,8 @@ func (r *run) runAudit(out *string, moduleDone, stop *chan bool) (err error) {
 			panic(err)
 		}
 	} else if err == nil && status == 0 {
-		return fmt.Errorf("audit cannot be enabled")
+		panic("audit cannot be enabled") // ?
+		// return fmt.Errorf("audit cannot be enabled")
 	} else {
 		panic(err)
 	}
@@ -231,14 +255,14 @@ func (r *run) runAudit(out *string, moduleDone, stop *chan bool) (err error) {
 			}
 		}
 	}()
-	// setup output medium and provide it to dispatchEvent
-	f, err := os.OpenFile("/tmp/jsonlog", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
-	go dispatchEvent(f)
 
+	// setup output function to dispatch audit events to desired medium
+	// one can also use setOutput(dispatch) to provide either their own version of dispatch
+	// or use the module one
+	// go setOutput(r)
+
+	// dispatchEventMozdef uses gozdef library to send audit events to a mozdef server
+	go dispatchEventMozdef(r.Parameters.ServerAddress)
 	netlinkAudit.GetRawAuditMessages(r.netlinkSocket, messageHandler, &errChan, stop)
 	// marshal the results into a json string
 	*out = r.buildResults(el, stats)
@@ -251,14 +275,14 @@ func sendStatusMessage(msg string) (err error) {
 	//sends a MessageClass with parameter as a simple string
 	statusMsg, err := modules.MakeMessage(modules.MsgClassStatus, msg, false)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	statusMsg = append(statusMsg, []byte("\n")...)
 	left := len(statusMsg)
 	for left > 0 {
 		nb, err := os.Stdout.Write(statusMsg)
 		if err != nil {
-			panic(err)
+			return err
 		}
 		left -= nb
 		statusMsg = statusMsg[nb:]
@@ -273,12 +297,12 @@ func (r *run) setConfigParams() (err error) {
 	var jsondump []byte
 	jsondump, err = ioutil.ReadFile(r.Parameters.RuleFilePath)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	var m interface{}
 	err = json.Unmarshal(jsondump, &m)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	rules := m.(map[string]interface{})
 
@@ -292,11 +316,11 @@ func (r *run) setConfigParams() (err error) {
 	}
 	rateLimit, err := strconv.Atoi(i)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	err = netlinkAudit.AuditSetRateLimit(r.netlinkSocket, rateLimit)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	// Set max limit audit message queue
@@ -307,17 +331,17 @@ func (r *run) setConfigParams() (err error) {
 	}
 	backlogLimit, err := strconv.Atoi(i)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	err = netlinkAudit.AuditSetBacklogLimit(r.netlinkSocket, backlogLimit)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	// Register current pid with audit
 	err = netlinkAudit.AuditSetPid(r.netlinkSocket, uint32(syscall.Getpid()))
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	//Delete all rules
@@ -325,40 +349,52 @@ func (r *run) setConfigParams() (err error) {
 		// TODO: MSG_DONWAIT will not work on low resources system (like VM)? Error while receiving rules
 		err = netlinkAudit.DeleteAllRules(r.netlinkSocket)
 		if err != nil {
-			panic(err)
+			return err
 		}
 	}
 
 	dir, err := os.Getwd()
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	err = netlinkAudit.SetRules(r.netlinkSocket, jsondump, dir)
 	if err != nil {
-		panic(err)
+		return err
 	}
 	return
 }
 
-// buffer for holding single event messages
-// var eventBuffer = make([]*netlinkAudit.AuditEvent, 5)
+// setupOutput takes a dispatch interface and can be used for opening
+// output medium and push events to them
+func setOutput(e dispatch) (err error) {
+	// setup output medium(a file) and provide it to dispatchEvent
+	f, err := os.OpenFile("/tmp/jsonlog", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	go e.dispatchEvent(f)
+	return
+}
 
+// buffer for holding single event messages
 var eventBuffer []*netlinkAudit.AuditEvent
 
 // var auditSerial int64
 var auditSerial string
 
+// messageHandler is provided as a callback to libaudit and it is invoked on every
+// audit event received by libaudit
+// it is used to bundle audit events of same serials and hand them over for JSON processing
 func messageHandler(msg string, event *netlinkAudit.AuditEvent, errChan chan error, args ...interface{}) {
 	select {
-	case err := <-errChan:
+	case _ = <-errChan:
+		// better way to notify ?
+		// fmt.Printf("audit event error: %v\n", err)
 
-		fmt.Printf("audit event error: %v\n", err)
-		fmt.Println(msg)
-		// fmt.Println(event.Data)
-		fmt.Println("xxxxxxx")
 	default:
-		//write messages to unix socket
+		//write messages to local log (message is as it is), similar to audit.log
 		f, err := os.OpenFile("/tmp/log", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 		if err != nil {
 			panic(err)
@@ -379,9 +415,12 @@ func messageHandler(msg string, event *netlinkAudit.AuditEvent, errChan chan err
 		} else {
 			// event is finished up
 			// process the messages
-			fmt.Println(auditSerial)
+			// fmt.Println(auditSerial)
 			// pack JSON
-			handleBuffer(&eventBuffer) // should we do this in a separate go-routine (wouldn't make sense as processing of messages shouldn't take much time)
+			err = handleBuffer(&eventBuffer)
+			if err != nil {
+				panic(err)
+			}
 			auditSerial = event.Serial
 			eventBuffer = nil
 			eventBuffer = append(eventBuffer, event)
@@ -404,6 +443,7 @@ const (
 	CatTIME     CategoryType = "time"
 )
 
+//jsonMsg stores the message packed by processing audit events of same serial numbers
 type jsonMsg struct {
 	Category    string                 `json:"category"`
 	Hostname    string                 `json:"hostname"`
@@ -416,6 +456,7 @@ type jsonMsg struct {
 	ProcessName string                 `json:"processname"`
 }
 
+//handleBuffer process upon the buffer of audit events and generate a jsonMsg
 func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 	var (
 		msg      jsonMsg
@@ -428,23 +469,24 @@ func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 	if len(buffer) == 0 {
 		return nil
 	}
-	msg.Hostname = "localhost" //for now
-	msg.ProcessID = 0
+	msg.Hostname, err = os.Hostname()
+	if err != nil {
+		return err
+	}
+	msg.ProcessID = os.Getpid()
 	msg.ProcessName = "mig-audit"
 	msg.Tags = []string{"mig-audit", "0.0.1", "audit"}
 	msg.Details = make(map[string]interface{})
 	msg.Details["auditserial"] = auditSerial
-	// timeStamp := strconv.FormatFloat(buffer[0].Timestamp, 'f', -1, 64)
-	// msg.TimeStamp = time.Unix(int64(buffer[0].Timestamp), 0).Format(time.UnixDate)
-	// msg.TimeStamp = buffer[0].Timestamp.Format(time.UnixDate)
-	// msg.TimeStamp = buffer[0].Timestamp
 	timestamp, err := strconv.ParseFloat(buffer[0].Timestamp, 64)
 	if err != nil {
 		return err
 	}
+
+	// msg.Timestamp can be overwritten by client's dispatch function for eg. in gozdef
 	msg.TimeStamp = time.Unix(int64(timestamp), 0).Format(time.UnixDate)
+	msg.Details["audittimestamp"] = msg.TimeStamp
 	for _, event := range buffer {
-		// fmt.Println(event.Type)
 		switch event.Type {
 		case "ANOM_PROMISCUOUS":
 			if _, ok := event.Data["dev"]; ok {
@@ -454,18 +496,19 @@ func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 				msg.Details["promiscious"] = event.Data["prom"]
 				msg.Details["old_promiscious"] = event.Data["old_prom"]
 				if _, oK := event.Data["auid"]; oK {
-					name, err := user.LookupId(event.Data["auid"])
-					if err == nil {
-						msg.Details["originaluser"] = name.Username
-					}
 					msg.Details["auid"] = event.Data["auid"]
+					userName, err := user.Lookup(event.Data["auid"])
+					if err == nil {
+						msg.Details["originaluser"] = userName.Username
+						msg.Details["originaluid"] = userName.Uid
+					}
 				}
 				if _, oK := event.Data["uid"]; oK {
-					name, err := user.LookupId(event.Data["uid"])
+					userName, err := user.Lookup(event.Data["uid"])
 					if err == nil {
-						msg.Details["user"] = name.Username
+						msg.Details["user"] = userName.Username
+						msg.Details["uid"] = userName.Uid
 					}
-					msg.Details["uid"] = event.Data["uid"]
 				}
 				msg.Details["gid"] = event.Data["gid"]
 				msg.Details["session"] = event.Data["ses"]
@@ -497,14 +540,12 @@ func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 				msg.Details["aaflags"] = event.Data["flags"]
 			}
 		case "EXECVE":
-			// fmt.Printf("%v\n", event.Data)
-			// fmt.Println(event.Raw)
 			argcount := 0
 			argc, ok := event.Data["argc"]
 			if ok {
 				argcount, err = strconv.Atoi(argc)
 				if err != nil {
-					panic(err)
+					return err
 				}
 			}
 			for i := 0; i != argcount; i++ {
@@ -519,43 +560,31 @@ func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 					continue
 				}
 			}
-			fmt.Printf("%v\n", fullCmd)
+			// fmt.Printf("%v\n", fullCmd)
 			msg.Details["command"] = fullCmd
 		case "CWD":
-			// fmt.Printf("%v\n", event.Data)
-			// fmt.Println(event.Raw)
 			cwd, ok := event.Data["cwd"]
 			if ok {
 				msg.Details["cwd"] = cwd
 			}
 		case "PATH":
-			// fmt.Printf("%v\n", event.Data)
-			// fmt.Println(event.Raw)
-			path = event.Data["name"]
-			msg.Details["path"] = event.Data["name"]
-			msg.Details["inode"] = event.Data["inode"]
-			msg.Details["dev"] = event.Data["dev"]
-			msg.Details["mode"] = event.Data["mode"]
-			msg.Details["ouid"] = event.Data["ouid"]
-			msg.Details["ogid"] = event.Data["ogid"]
-			msg.Details["rdev"] = event.Data["rdev"]
+			if event.Data["name"] != "(null)" {
+				path = event.Data["name"]
+				msg.Details["path"] = event.Data["name"]
+				msg.Details["inode"] = event.Data["inode"]
+				msg.Details["dev"] = event.Data["dev"]
+				msg.Details["mode"] = event.Data["mode"]
+				msg.Details["ouid"] = event.Data["ouid"]
+				msg.Details["ogid"] = event.Data["ogid"]
+				msg.Details["rdev"] = event.Data["rdev"]
+			}
 			// same type of messages leads to overwriting of prev ones: fix this case (check "item" ?)
 			// type=PATH msg=audit(1467118452.042:37628): item=0 name="/bin/df" inode=258094 dev=08:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL
 			// type=PATH msg=audit(1467118452.042:37628): item=1 name=(null) inode=135770 dev=08:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL
 
 		case "SYSCALL":
-			// fmt.Printf("%v\n", event.Data)
-			// fmt.Println(event.Raw)
 			syscallName, ok := event.Data["syscall"]
 			if ok {
-				// dir, err := os.Getwd()
-				// if err != nil {
-				// 	panic(err)
-				// }
-				// syscallName, err := netlinkAudit.AuditSyscallToName(syscall, dir)
-				// if err != nil {
-				// 	panic(err)
-				// }
 				msg.Details["processname"] = event.Data["comm"]
 				if syscallName == "write" || syscallName == "unlink" || syscallName == "open" || syscallName == "rename" {
 					haveJSON = true
@@ -580,18 +609,17 @@ func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 				} else if syscallName == "adjtimex" {
 					category = CatTIME
 				} else {
-					fmt.Printf("System call %v is not supported\n", syscallName)
+					// fmt.Printf("System call %v is not supported\n", syscallName)
 				}
 				msg.Details["auditkey"] = event.Data["key"]
 				if _, ok := event.Data["ppid"]; ok {
 					msg.Details["parentprocess"], err = getProcessName(event.Data["ppid"])
 					if err != nil {
-						// we can't get name process name?
+						// we can't get name process name
 						msg.Details["parentprocess"] = event.Data["ppid"]
 					}
 				}
 				if _, ok := event.Data["auid"]; ok {
-					// userName, err := user.LookupId(event.Data["auid"])
 					userName, err := user.Lookup(event.Data["auid"])
 					if err == nil {
 						msg.Details["originaluser"] = userName.Username
@@ -599,7 +627,6 @@ func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 					}
 				}
 				if _, ok := event.Data["uid"]; ok {
-					// userName, err := user.LookupId(event.Data["uid"])
 					userName, err := user.Lookup(event.Data["auid"])
 					if err == nil {
 						msg.Details["user"] = userName.Username
@@ -625,16 +652,20 @@ func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 
 		}
 	}
-	// reason ?
+	// no json specific fields so we skip this message
 	if !haveJSON {
 		msg.Details = nil
-		fmt.Println("Not have JSON skipping !!")
+		// fmt.Println("Not have JSON skipping !!")
 		return
 	}
 	//fill summary
-	// skip empty execve messages ?
 	if category == CatEXECVE {
 		msg.Category = "execve"
+		// skip empty execve messages ?
+		if len(fullCmd) == 0 {
+			// fmt.Println("skipping empty execve message")
+			return
+		}
 		msg.Summary = fmt.Sprintf("Execve %s", fullCmd)
 
 	} else if category == CatWRITE {
@@ -656,15 +687,20 @@ func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 		msg.Category = "promiscuous"
 		msg.Summary = fmt.Sprintf("Promisc: Interface %s set promiscous %s", msg.Details["dev"], msg.Details["au"])
 	}
-	msgBytes, err := json.Marshal(msg)
-	fmt.Printf("%v\n", string(msgBytes))
+	// msgBytes, err := json.Marshal(msg)
+	// if err != nil {
+	// 	return err
+	// }
+	// fmt.Printf("%v\n", string(msgBytes))
 
 	// sending message via a go-routine by writing to a buffered channel
+	// it's a non-blocking send, so the function will not block even if buffer is full
+	// on a full buffer the newest messages will be dropped
 	select {
 	case jsonBuffChan <- &msg:
-		fmt.Println("sent message", msg)
+		// fmt.Println("sent message", msg)
 	default:
-		fmt.Println("skipping message", msg)
+		// fmt.Println("skipping message", msg)
 	}
 
 	return
@@ -684,18 +720,24 @@ func getProcessName(pid string) (name string, err error) {
 }
 
 var (
-	maxQueueSize = 8192
+	// max number of json messages to be stored while dispatching to output
+	maxQueueSize = 500
 	// buffered chan for holding json messages
-	jsonBuffChan = make(chan *jsonMsg, 500)
+	jsonBuffChan = make(chan *jsonMsg, maxQueueSize)
 )
 
-// abstract function that writes to whatever output provided(socket, file etc.)
+// any client that needs to write to output should implement dispatch
+type dispatch interface {
+	dispatchEvent(io.Writer)
+}
+
+// sample abstract function that writes to whatever output provided(socket, file etc.)
 // reads messages from buffered chan jsonBuffChan & invoked in a separate go-routine
-func dispatchEvent(output io.Writer) {
+func (r *run) dispatchEvent(output io.Writer) {
 	for {
 		select {
 		case msg := <-jsonBuffChan:
-			fmt.Println("Writing")
+			// fmt.Println("Writing")
 			msgBytes, err := json.Marshal(*msg)
 			if err != nil {
 				panic(err) // or should I ?
@@ -711,6 +753,44 @@ func dispatchEvent(output io.Writer) {
 				}
 				left -= nb
 				msgBytes = msgBytes[nb:]
+			}
+
+		}
+	}
+}
+
+// dispatchEventMozdef opens up a http client and uses gozdef
+// to POST events to the mozdef url, invoked in a goroutine
+func dispatchEventMozdef(serverAddr string) {
+	cnf := gozdef.ApiConf{Url: serverAddr}
+	publisher, err := gozdef.InitApi(cnf)
+	if err != nil {
+		panic(err)
+	}
+	for {
+		select {
+		case msg := <-jsonBuffChan:
+			// fmt.Println("Writing to server")
+			ev, err := gozdef.NewEvent()
+			if err != nil {
+				panic(err)
+			}
+			ev.Category = msg.Category
+			ev.Source = "mig audit"
+			ev.Summary = msg.Summary
+			ev.Tags = append(ev.Tags, msg.Tags...)
+			ev.Details = msg.Details
+			// filled by gozdef
+			// ev.ProcessID
+			// ev.ProcessName
+			// ev.Hostname
+			// ev.Timestamp
+			ev.Info()
+
+			// publish to mozdef
+			err = publisher.Send(ev)
+			if err != nil {
+				panic(err) // retry sending ?
 			}
 
 		}
