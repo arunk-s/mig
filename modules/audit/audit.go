@@ -145,34 +145,33 @@ func (r *run) Run(in io.Reader) (out string) {
 
 //continously watch stdin for stop signals, config messages
 //when one stop message is received, `true`` is sent to a boolean channel
-func (r *run) watchForSignals(in io.Reader, stopChan *chan bool) error {
+func (r *run) watchForSignals(in io.Reader, stopChan *chan bool) {
 	for {
 		msg, err := modules.ReadInput(in)
 		if err != nil {
-			return err
-			// panic(err) doubt: should we panic, as the function runs in a goroutine and no collection of error is done ?
+			sendLogMessage(err)
+			panic(err)
 		}
 		if msg.Class == modules.MsgClassStop {
 			*stopChan <- true
-			return nil
 		} else if msg.Class == modules.MsgClassConfig {
 			//read config parameters
 			err := modules.ReadInputParameters(in, &r.Parameters)
 			if err != nil {
-				return err
-				// panic(err)
+				sendLogMessage(err)
+				panic(err)
 			}
 			err = r.ValidateParameters()
 			if err != nil {
-				// panic(err)
-				return err
+				sendLogMessage(err)
+				panic(err)
 			}
 			// set config params by reading rules file
 			// r.netlinkSocket should be opened by now
 			err = r.setConfigParams()
 			if err != nil {
-				// panic(err)
-				return err
+				sendLogMessage(err)
+				panic(err)
 			}
 		} else if msg.Class == modules.MsgClassStatus {
 			// more parameters can be added to status message
@@ -181,8 +180,8 @@ func (r *run) watchForSignals(in io.Reader, stopChan *chan bool) error {
 			statusString := "audit " + time.Now().UTC().Format(time.UnixDate)
 			err = sendStatusMessage(statusString)
 			if err != nil {
-				return err
-				// panic(err)
+				sendLogMessage(err)
+				panic(err)
 			}
 		}
 	}
@@ -197,6 +196,7 @@ func (r *run) runAudit(out *string, moduleDone, stop *chan bool) (err error) {
 	stats.StuffFound = 0 // count for stuff
 	el.Hostname, err = os.Hostname()
 	if err != nil {
+		sendLogMessage(err)
 		panic(err) //doubt: should we panic, as the function runs in a goroutine and no collection of error is done ?
 	}
 	stats.StuffFound++
@@ -204,12 +204,14 @@ func (r *run) runAudit(out *string, moduleDone, stop *chan bool) (err error) {
 	//open a netlink Connection and attach it to the instance of run
 	r.netlinkSocket, err = netlinkAudit.NewNetlinkConnection()
 	if err != nil {
+		sendLogMessage(err)
 		panic(err) //doubt: should we panic, as the function runs in a goroutine and no collection of error is done ?
 	}
 
 	defer r.netlinkSocket.Close()
 	err = netlinkAudit.AuditSetEnabled(r.netlinkSocket, 1)
 	if err != nil {
+		sendLogMessage(err)
 		panic(err) // doubt: should we panic, as the function runs in a goroutine and no collection of error is done ?
 	}
 
@@ -218,11 +220,9 @@ func (r *run) runAudit(out *string, moduleDone, stop *chan bool) (err error) {
 	status, err := netlinkAudit.AuditIsEnabled(r.netlinkSocket)
 
 	if err == nil && status == 1 {
-		err = sendStatusMessage("audit is enabled")
-		if err != nil {
-			panic(err)
-		}
+		sendLogMessage("audit is enabled")
 	} else if err == nil && status == 0 {
+		sendLogMessage("audit cannot be enabled, shutting down the module")
 		panic("audit cannot be enabled") // ?
 		// return fmt.Errorf("audit cannot be enabled")
 	} else {
@@ -232,6 +232,7 @@ func (r *run) runAudit(out *string, moduleDone, stop *chan bool) (err error) {
 	// rules file should be libaudit specified json only
 	err = r.setConfigParams()
 	if err != nil {
+		sendLogMessage(err)
 		panic(err)
 	}
 	errChan := make(chan error, 1)
@@ -286,6 +287,26 @@ func sendStatusMessage(msg string) (err error) {
 		}
 		left -= nb
 		statusMsg = statusMsg[nb:]
+	}
+	return
+}
+
+//send log messages to process stdout
+func sendLogMessage(msg interface{}) {
+	//sends a MessageClass with parameter as a simple string
+	logMsg, err := modules.MakeMessage(modules.MsgClassLog, msg, false)
+	if err != nil {
+		panic(err)
+	}
+	logMsg = append(logMsg, []byte("\n")...)
+	left := len(logMsg)
+	for left > 0 {
+		nb, err := os.Stdout.Write(logMsg)
+		if err != nil {
+			panic(err)
+		}
+		left -= nb
+		logMsg = logMsg[nb:]
 	}
 	return
 }
@@ -387,12 +408,10 @@ var auditSerial string
 // messageHandler is provided as a callback to libaudit and it is invoked on every
 // audit event received by libaudit
 // it is used to bundle audit events of same serials and hand them over for JSON processing
-func messageHandler(msg string, event *netlinkAudit.AuditEvent, errChan chan error, args ...interface{}) {
+func messageHandler(event *netlinkAudit.AuditEvent, errChan chan error, args ...interface{}) {
 	select {
-	case _ = <-errChan:
-		// better way to notify ?
-		// fmt.Printf("audit event error: %v\n", err)
-
+	case err := <-errChan:
+		sendLogMessage(fmt.Sprintf("audit error: %v", err))
 	default:
 		//write messages to local log (message is as it is), similar to audit.log
 		f, err := os.OpenFile("/tmp/log", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
@@ -400,7 +419,8 @@ func messageHandler(msg string, event *netlinkAudit.AuditEvent, errChan chan err
 			panic(err)
 		}
 		defer f.Close()
-		if _, err = f.WriteString(msg); err != nil {
+		if _, err = f.WriteString(event.Raw); err != nil {
+			sendLogMessage(err)
 			panic(err)
 		}
 		// if the serial of the next message is the same as we got previously
@@ -419,6 +439,7 @@ func messageHandler(msg string, event *netlinkAudit.AuditEvent, errChan chan err
 			// pack JSON
 			err = handleBuffer(&eventBuffer)
 			if err != nil {
+				sendLogMessage(err)
 				panic(err)
 			}
 			auditSerial = event.Serial
@@ -450,7 +471,7 @@ type jsonMsg struct {
 	ProcessID   int                    `json:"processid"`
 	Severity    string                 `json:"severity"`
 	Summary     string                 `json:"summary"`
-	TimeStamp   string                 `json:"timestamp"`
+	TimeStamp   time.Time              `json:"timestamp"`
 	Details     map[string]interface{} `json:"details"`
 	Tags        []string               `json:"tags"`
 	ProcessName string                 `json:"processname"`
@@ -484,7 +505,7 @@ func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 	}
 
 	// msg.Timestamp can be overwritten by client's dispatch function for eg. in gozdef
-	msg.TimeStamp = time.Unix(int64(timestamp), 0).Format(time.UnixDate)
+	msg.TimeStamp = time.Unix(int64(timestamp), 0).UTC()
 	msg.Details["audittimestamp"] = msg.TimeStamp
 	for _, event := range buffer {
 		switch event.Type {
@@ -610,6 +631,7 @@ func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 					category = CatTIME
 				} else {
 					// fmt.Printf("System call %v is not supported\n", syscallName)
+					sendLogMessage(fmt.Sprintf("system call %v is not supported\n", syscallName))
 				}
 				msg.Details["auditkey"] = event.Data["key"]
 				if _, ok := event.Data["ppid"]; ok {
@@ -700,7 +722,7 @@ func handleBuffer(bufferPointer *[]*netlinkAudit.AuditEvent) (err error) {
 	case jsonBuffChan <- &msg:
 		// fmt.Println("sent message", msg)
 	default:
-		// fmt.Println("skipping message", msg)
+		sendLogMessage(fmt.Sprintf("skipping message %v", msg.Details["auditserial"]))
 	}
 
 	return
@@ -740,7 +762,7 @@ func (r *run) dispatchEvent(output io.Writer) {
 			// fmt.Println("Writing")
 			msgBytes, err := json.Marshal(*msg)
 			if err != nil {
-				panic(err) // or should I ?
+				panic(err)
 			}
 			msgBytes = append(msgBytes, []byte("\n")...)
 			left := len(msgBytes)
@@ -748,6 +770,8 @@ func (r *run) dispatchEvent(output io.Writer) {
 				nb, err := output.Write(msgBytes)
 
 				if err != nil {
+					// let the agent know that the message sending is failing
+					sendLogMessage(fmt.Sprintf("dispatching of event %v is failed", msg.Details["auditserial"]))
 					panic(err)
 					// retry to resend the message ?
 				}
@@ -775,6 +799,7 @@ func dispatchEventMozdef(serverAddr string) {
 			if err != nil {
 				panic(err)
 			}
+			ev.Timestamp = msg.TimeStamp
 			ev.Category = msg.Category
 			ev.Source = "mig audit"
 			ev.Summary = msg.Summary
@@ -786,11 +811,20 @@ func dispatchEventMozdef(serverAddr string) {
 			// ev.Hostname
 			// ev.Timestamp
 			ev.Info()
-
-			// publish to mozdef
-			err = publisher.Send(ev)
+			var maxTries = 3
+			for i := 0; i < maxTries; i++ {
+				// publish to mozdef
+				err = publisher.Send(ev)
+				if err != nil {
+					// sleep for 5 seconds and retry sending
+					time.Sleep(time.Second * 5)
+				} else {
+					break
+				}
+			}
 			if err != nil {
-				panic(err) // retry sending ?
+				// let the agent know that the message sending is failing
+				sendLogMessage(fmt.Sprintf("dispatching of event %v is failed", msg.Details["auditserial"]))
 			}
 
 		}

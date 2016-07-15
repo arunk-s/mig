@@ -150,7 +150,7 @@ done:
 var _audit_permadded bool
 var _audit_syscalladded bool
 
-// Load x86 map and fieldtab.json
+// Load x86_64 map and fieldtab.json
 func loadSysMapFieldTab(prefixPath string, x86Map interface{}, fieldmap *Field) error {
 	//TODO: Fix following hack for a better method
 	path, _ := filepath.Abs(prefixPath + "/vendor/github.com/mozilla/libaudit-go/audit_x86_64.json")

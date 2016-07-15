@@ -2,7 +2,6 @@ package netlinkAudit
 
 import (
 	"fmt"
-	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -14,8 +13,6 @@ import (
 type EventCallback func(*AuditEvent, chan error, ...interface{})
 
 type RawEventCallback func(string, chan error, ...interface{})
-
-type EventCb func(string, *AuditEvent, chan error, ...interface{})
 
 type AuditEvent struct {
 	Serial    string
@@ -31,62 +28,6 @@ type record struct {
 	a0         int
 	a1         int
 }
-
-/*
-func ParseAuditKeyValue(str string) (map[string][string], err error) {
-	audit_key_string := map[string]bool{
-	}
-	re_kv := regexp.MustCompile(`((?:\\.|[^= ]+)*)=("(?:\\.|[^"\\]+)*"|(?:\\.|[^ "\\]+)*)`)
-	re_quotedstring := regexp.MustCompile(`".+"`)
-
-	kv := re_kv.FindAllStringSubmatch(str, -1)
-	m := make(map[string]string)
-
-	for _, e := range kv {
-		key := e[1]
-		value := e[2]
-		if re_quotedstring.MatchString(value) {
-			value = strings.Trim(value, "\"")
-		}
-
-		if audit_key_string[key] {
-			if re_quotedstring.MatchString(value) == false {
-				v, err := hex.DecodeString(value)
-				if err == nil {
-					m[key] = string(v)
-				}
-			}
-		} else {
-			m[key] = value
-		}
-	}
-	return m
-}
-
-func ParseAuditEvent(str string) (int, float64, map[string]string, error) {
-	// re := regexp.MustCompile(`^audit\((\d+\.\d+):(\d+)\): (.*)$`)
-	re := regexp.MustCompile(`audit\((?P<timestamp>\d+\.\d+):(?P<serial>\d+)\): (.*)$`)
-	match := re.FindStringSubmatch(str)
-
-	if len(match) != 4 {
-		return 0, 0, nil, errors.New("Error while parsing audit message : Invalid Message")
-	}
-
-	serial, err := strconv.ParseInt(match[2], 10, 64)
-	if err != nil {
-		return 0, 0, nil, errors.New("Error while parsing audit message : Invalid Message")
-	}
-
-	timestamp, err := strconv.ParseFloat(match[1], 64)
-	if err != nil {
-		return 0, 0, nil, errors.New("Error while parsing audit message : Invalid Message")
-	}
-
-	data := ParseAuditKeyValue(match[3])
-
-	return int(serial), timestamp, data, nil
-}
-*/
 
 // ParseAuditEventRegex takes an audit event message and returns the essentials to form an AuditEvent struct
 // regex used in the function should always match for a proper audit event
@@ -148,7 +89,10 @@ func ParseAuditKeyValue(str string) map[string]string {
 
 }
 
-// idea from static int parse_up_record(rnode* r) in ellist.c (libauparse)
+// ParseAuditEvent parses an incoming audit message from kernel and
+// returns and AuditEvent. It relies on using simple string parsing techniques.
+// idea taken from static int parse_up_record(rnode* r) in ellist.c (libauparse)
+// sample messages to be tested against
 // audit(1267534395.930:19): user pid=1169 uid=0 auid=4294967295 ses=4294967295 subj=system_u:unconfined_r:unconfined_t msg='avc: denied { read } for request=SELinux:SELinuxGetClientContext comm=X-setest resid=3c00001 restype=<unknown> scontext=unconfined_u:unconfined_r:x_select_paste_t tcontext=unconfined_u:unconfined_r:unconfined_t  tclass=x_resource : exe="/usr/bin/Xorg" sauid=0 hostname=? addr=? terminal=?' [currently failing]
 // audit(1464176620.068:1445): auid=4294967295 uid=1000 gid=1000 ses=4294967295 pid=23975 comm="chrome" exe="/opt/google/chrome/chrome" sig=0 arch=c000003e syscall=273 compat=0 ip=0x7f1da6d8b694 code=0x50000
 // audit(1464163771.720:20): arch=c000003e syscall=1 success=yes exit=658651 a0=6 a1=7f26862ea010 a2=a0cdb a3=0 items=0 ppid=712 pid=716 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="apparmor_parser" exe="/sbin/apparmor_parser" key=(null)
@@ -172,13 +116,11 @@ func ParseAuditEvent(str string, msgType auditConstant) (*AuditEvent, error) {
 	timestamp := str[:index]
 	// move further on string, skipping ':'
 	str = str[index+1:]
-	// fmt.Println(&str)
 	index = strings.Index(str, ")")
 	if index == -1 {
 		return nil, fmt.Errorf("malformed audit message")
 	}
 	serial := str[:index]
-	// fmt.Println(serial)
 	if strings.HasPrefix(str, serial+"): ") {
 		str = str[index+3:]
 	} else {
@@ -187,7 +129,6 @@ func ParseAuditEvent(str string, msgType auditConstant) (*AuditEvent, error) {
 
 	var nBytes string
 	var orig = len(str)
-	// var n int
 	var n int
 	var key string
 	var value string
@@ -209,10 +150,8 @@ func ParseAuditEvent(str string, msgType auditConstant) (*AuditEvent, error) {
 					key = "seresult"
 					value = nBytes
 					m[key] = value
-					// fmt.Println(key, value)
 					av = false
 					if len(str) == len(nBytes) {
-						//reached the end of message
 						break
 					} else {
 						str = str[len(nBytes)+1:]
@@ -235,7 +174,6 @@ func ParseAuditEvent(str string, msgType auditConstant) (*AuditEvent, error) {
 					value = v
 					m[key] = value
 					fixPunctuantions(&value)
-					// fmt.Println(key, value)
 					if len(str) == len(nBytes) {
 						//reached the end of message
 						break
@@ -253,7 +191,6 @@ func ParseAuditEvent(str string, msgType auditConstant) (*AuditEvent, error) {
 					}
 					value += " " + nBytes
 					fixPunctuantions(&value)
-					// fmt.Println(key, value)
 					m[key] = value
 				}
 			} else {
@@ -261,7 +198,6 @@ func ParseAuditEvent(str string, msgType auditConstant) (*AuditEvent, error) {
 				// add it to prev key
 				value += " " + nBytes
 				fixPunctuantions(&value)
-				// fmt.Println(key, value)
 				m[key] = value
 			}
 
@@ -310,7 +246,6 @@ func ParseAuditEvent(str string, msgType auditConstant) (*AuditEvent, error) {
 			if key == "syscall" {
 				r.syscallNum = value
 			}
-			// fmt.Println(key, value)
 			m[key] = value
 		}
 		if len(str) == len(nBytes) {
@@ -328,7 +263,6 @@ func ParseAuditEvent(str string, msgType auditConstant) (*AuditEvent, error) {
 			return nil, err
 		}
 		m[key] = ivalue
-		// fmt.Printf("%s: %s\n", key, ivalue)
 	}
 
 	return &AuditEvent{
@@ -394,13 +328,13 @@ func fixPunctuantions(value *string) {
 	}
 }
 
+//NewAuditEvent takes NetlinkMessage passed from the netlink connection
+//and parses the data from message to return an AuditEvent struct
 func NewAuditEvent(msg NetlinkMessage) (*AuditEvent, error) {
 	x, err := ParseAuditEvent(string(msg.Data[:]), auditConstant(msg.Header.Type))
 	if err != nil {
 		return nil, err
 	}
-	// (*x).Raw = string(msg.Data[:])
-	// (*x).Type = auditConstant(msg.Header.Type).String()[6:]
 	if (*x).Type == "auditConstant("+strconv.Itoa(int(msg.Header.Type))+")" {
 		return nil, errors.New("Unknown Type: " + string(msg.Header.Type))
 	}
@@ -421,7 +355,8 @@ func GetAuditEvents(s *NetlinkConnection, cb EventCallback, ec chan error, args 
 							//Note - NLMSG_ERROR can be Acknowledgement from kernel
 							//If the first 4 bytes of Data part are zero
 						} else {
-							log.Println("NLMSG ERROR")
+							// log.Println("NLMSG ERROR")
+							continue
 						}
 					} else {
 						nae, err := NewAuditEvent(msg)
@@ -448,6 +383,8 @@ func GetRawAuditEvents(s *NetlinkConnection, cb RawEventCallback, ec chan error,
 						err := int32(nativeEndian().Uint32(msg.Data[0:4]))
 						if err == 0 {
 							//Acknowledgement from kernel
+						} else {
+							continue
 						}
 					} else {
 						Type := auditConstant(msg.Header.Type)
@@ -464,7 +401,7 @@ func GetRawAuditEvents(s *NetlinkConnection, cb RawEventCallback, ec chan error,
 	}()
 }
 
-func GetRawAuditMessages(s *NetlinkConnection, cb EventCb, ec *chan error, done *chan bool, args ...interface{}) {
+func GetRawAuditMessages(s *NetlinkConnection, cb EventCallback, ec *chan error, done *chan bool, args ...interface{}) {
 	for {
 		select {
 		case <-*done:
@@ -472,7 +409,6 @@ func GetRawAuditMessages(s *NetlinkConnection, cb EventCb, ec *chan error, done 
 		default:
 			msgs, _ := s.Receive(syscall.NLMSG_HDRLEN+MAX_AUDIT_MESSAGE_LENGTH, 0)
 			for _, msg := range msgs {
-				m := ""
 				if msg.Header.Type == syscall.NLMSG_ERROR {
 					err := int32(nativeEndian().Uint32(msg.Data[0:4]))
 					if err == 0 {
@@ -481,17 +417,11 @@ func GetRawAuditMessages(s *NetlinkConnection, cb EventCb, ec *chan error, done 
 						continue
 					}
 				} else {
-					Type := auditConstant(msg.Header.Type)
-					if Type.String() == "auditConstant("+strconv.Itoa(int(msg.Header.Type))+")" {
-						*ec <- errors.New("Unknown Type: " + string(msg.Header.Type))
-					} else {
-						m = "type=" + Type.String()[6:] + " msg=" + string(msg.Data[:]) + "\n"
-					}
 					nae, err := NewAuditEvent(msg)
 					if err != nil {
 						*ec <- err
 					}
-					cb(m, nae, *ec, args...)
+					cb(nae, *ec, args...)
 				}
 			}
 		}

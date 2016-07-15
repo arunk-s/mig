@@ -624,15 +624,6 @@ func printSockAddr(fieldValue string) (string, error) {
 	errstring := fmt.Sprintf("%s (error resolving addr)", famLookup[family])
 
 	switch family {
-	// case syscall.AF_LOCAL:
-	// 	str := bytestr[2:]
-	// 	name = fmt.Sprintf("%s %s", famLookup[family], string(str))
-	// 	return name, nil
-	// case syscall.AF_INET:
-	// 	port := 256*int(bytestr[2]) + int(bytestr[3])
-	// 	addr := bytestr[4:]
-	// 	ip := fmt.Sprintf("%d.%d.%d.%d", int(addr[0]), int(addr[1]), int(addr[2]), int(addr[3]))
-	// 	name = fmt.Sprintf("%s host:%s serv:%d", famLookup[family], ip, port)
 
 	case syscall.AF_LOCAL:
 		var p sockaddr_un
@@ -688,7 +679,7 @@ func printSockAddr(fieldValue string) (string, error) {
 		if err != nil {
 			return fieldValue, errors.Wrap(err, errstring)
 		}
-		//what info to give
+		// decide on kind of info to return
 		// name = fmt.Sprintf("%s pid:%u", famLookup[family], l.)
 		return famLookup[family], nil
 

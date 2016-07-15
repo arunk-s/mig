@@ -629,7 +629,6 @@ func startPersistentModule(ctx *Context, moduleName, params string) (err error) 
 				if err != nil {
 					ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("persistent module %q failed with %q", moduleName, err)}.Err()
 					ctx.Channels.Terminate <- fmt.Sprintf("persistent module %q failed", moduleName)
-					//panic(err)
 				} else {
 					ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("persistent module %q exited.", moduleName)}
 				}
@@ -647,7 +646,8 @@ func startPersistentModule(ctx *Context, moduleName, params string) (err error) 
 				infd := bufio.NewReader(bytes.NewBuffer(msg))
 				newMessage, err := modules.ReadInput(infd)
 				if err != nil {
-					panic(err)
+					ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("persistent module %q : error while reading %q", moduleName, err)}.Err()
+					continue
 				}
 				if newMessage.Class == modules.MsgClassHeartbeat {
 					//reset time counter
@@ -668,6 +668,8 @@ func startPersistentModule(ctx *Context, moduleName, params string) (err error) 
 						openConfigReqs = openConfigReqs[1:]
 						*responseChan <- []byte("1")
 					}
+				} else if newMessage.Class == modules.MsgClassLog {
+					ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("persistent module %q: %q", moduleName, msg)}
 				} else {
 					ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("%q: %q", moduleName, msg)}
 				}
@@ -679,8 +681,7 @@ func startPersistentModule(ctx *Context, moduleName, params string) (err error) 
 					// kill the module process
 					err := cmd.Process.Kill()
 					if err != nil {
-						//???????
-						panic(err)
+						ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("persistent module %q : %q", moduleName, err)}.Err()
 					}
 					<-waiter // allow go routine to exit
 					delete(runningPersistentMods, moduleName)
@@ -697,8 +698,8 @@ func startPersistentModule(ctx *Context, moduleName, params string) (err error) 
 					// send message class stop to process stdin
 					stopMsg, err := modules.MakeMessage(modules.MsgClassStop, nil, false)
 					if err != nil {
-						//???????
-						panic(err)
+						ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("persistent module %q : %q", moduleName, err)}.Err()
+						continue
 					}
 					stopMsg = append(stopMsg, []byte("\n")...)
 					left := len(stopMsg)
@@ -712,14 +713,13 @@ func startPersistentModule(ctx *Context, moduleName, params string) (err error) 
 						left -= nb
 						stopMsg = stopMsg[nb:]
 					}
-					// do I do select here ?
 				} else if newMessage.Class == modules.MsgClassStatus {
 					//enqueue the response chan
 					openStatusReqs = append(openStatusReqs, &msgStruct.responseChan)
 					statusMsg, err := modules.MakeMessage(modules.MsgClassStatus, nil, false)
 					if err != nil {
-						//???????
-						panic(err)
+						ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("persistent module %q : %q", moduleName, err)}.Err()
+						continue
 					}
 					statusMsg = append(statusMsg, []byte("\n")...)
 					left := len(statusMsg)
@@ -740,8 +740,8 @@ func startPersistentModule(ctx *Context, moduleName, params string) (err error) 
 					// send config params to the process
 					configMsg, err := modules.MakeMessage(modules.MsgClassConfig, msgStruct.msg.Parameters, false)
 					if err != nil {
-						//???????
-						panic(err)
+						ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("persistent module %q : %q", moduleName, err)}.Err()
+						continue
 					}
 					configMsg = append(configMsg, []byte("\n")...)
 					left := len(configMsg)

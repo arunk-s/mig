@@ -69,7 +69,7 @@
 
 	"errStrings" : [
 		{
-			"string": "E2BIG",,
+			"string": "E2BIG",
 			"s2iS"  : 0,
 			"s2iI"	: 8
 		},
@@ -84,37 +84,37 @@
 			"s2iI"	: 8
 		},
 		{
-			"name": ,"EADDRNOTAVAIL",
+			"name": "EADDRNOTAVAIL",
 			"s2iS"  : 23,
 			"s2iI"	: 0
 		},
 		{
-			"name": ,"EADV",
+			"name": "EADV",
 			"s2iS"  : 28,
 			"s2iI"	: 0
 		},
 		{
-			"name": ,"EAFNOSUPPORT",
+			"name": "EAFNOSUPPORT",
 			"s2iS"  : 33,
 			"s2iI"	: 0
 		},
 		{
-			"name": ,"EAGAIN",
+			"name": "EAGAIN",
 			"s2iS"  : 38,
 			"s2iI"	: 0
 		},
 		{
-			"name": ,"EALREADY",
+			"name": "EALREADY",
 			"s2iS"  : 43,
 			"s2iI"	: 0
 		},
 		{
-			"name": ,"EBADE",
+			"name": "EBADE",
 			"s2iS"  : 48,
 			"s2iI"	: 0
 		},
 		{
-			"name": ,"EBADF",
+			"name": "EBADF",
 			"s2iS"  : 52,
 			"s2iI"	: 0
 		},

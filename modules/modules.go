@@ -35,6 +35,7 @@ const (
 	MsgClassConfig     MessageClass = "config"
 	MsgClassStatus     MessageClass = "status"
 	MsgClassHeartbeat  MessageClass = "heartbeat"
+	MsgClassLog        MessageClass = "log"
 )
 
 // Result implement the base type for results returned by modules.
