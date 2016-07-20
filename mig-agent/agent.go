@@ -488,6 +488,9 @@ func startRoutines(ctx *Context) (err error) {
 	if len(PERSISTENTMODULES) > 0 {
 		for _, moduleString := range PERSISTENTMODULES {
 			moduleName := moduleString[0]
+			if _, ok := modules.Available[moduleName]; !ok {
+				return fmt.Sprintf("module %q is not available", moduleName)
+			}
 			ctx.Channels.Log <- mig.Log{Desc: fmt.Sprintf("Enabled persistent module %q", moduleName)}
 			//parse moduleparams from the config file
 			//module params are passed as JSON MsgClassParameters Message
